@@ -3,7 +3,7 @@ import re
 import json
 import ctypes
 
-class Types:
+class Types(object):
 
 	'''
 		Types class - Building type systems
@@ -24,7 +24,7 @@ class Types:
 		TODO:
 	'''
 
-	def __init__(self, stdc=True, stddef=False, stdint=False, dlltype=False):
+	def __init__(self, stdc=False, stddef=False, stdint=False, dlltype=False):
 		# Init
 		self._list = {}
 		self._cache = {}
@@ -152,7 +152,8 @@ class Types:
 			if info is not None:
 				return info[2]
 			else:
-				raise ValueError('type: Undefned type: %s' % type)
+				print(self._list)
+				raise ValueError('type: Undefined type: %s' % type)
 		else:
 			raise ValueError('type: Invalid tree')
 	
@@ -275,7 +276,7 @@ class Types:
 		(state in (0, 3, 7)) and (len(result) == 1) or error_unfinished()
 		return result[0]
 		
-class DLL:
+class DLL(object):
 
 	# Path to load
 	path = ['.'] + list(sys.path)
@@ -285,14 +286,14 @@ class DLL:
 	cache = {}
 	
 	def __init__(self, library, libconf, libdesc):
-		self._types = Types(False, False, False, True)
+		self._types = Types(dlltype=True)
 		self._namespace = {}
 		self._description = libdesc
 		
-		# TODO: process config & load binary
+		# Load library
 		self._binary = ctypes.cdll.LoadLibrary(library)
-		self.process(libconf)
-	
+		self._process(libconf)
+		
 	@classmethod
 	def load(cls, jsonfile, dllfile=None, private=False):
 	
@@ -322,13 +323,13 @@ class DLL:
 		# Default values
 		if dllfile is None:
 			dllfile = config.get('binary', '*')
-		dllfile.replace('*', jsonname)
+		dllfile = dllfile.replace('*', jsonname)
 			
 		# Locate dllfile
 		dllfile = cls.locate(dllfile, [jsonpath] + cls.path, cls.exts) or error_notfound(dllfile)
 		
 		# Create object
-		result = cls(library=config['library'], binary=dllfile)
+		result = cls(library=dllfile, libconf=config['library'], libdesc=config.get('description'))
 		
 		# Save to dll cache
 		if not private:
@@ -379,13 +380,109 @@ class DLL:
 		# Not found
 		return None
 		
-	def process(self, config):
+	def __getattr__(self, attr):
+		return self._namespace[attr]
+	
+	def __getitem__(self, name):
+		return self._namespace[name]
 		
-		# Process types
-		pass
+	def __iter__(self):
+		return self._namespace.__iter__()
 		
+	def keys(self):
+		return self._namespace.keys()
+		
+	def values(self):
+		return self._namespace.values()
+		
+	def items(self):
+		return self._namespace.items()
+		
+	def _process(self, config):
+	
+		# Library version
+		self.version = config.get('version')
+	
+		# Process defines
+		defines = config.get('define')
+		if defines:
 			
+			# Define integer constants
+			items = defines.get('const.int')
+			if items:
+				for k, v in items.items():
+					self._define_const_int(k, v)
+					
+			# Define floating point constants
+			items = defines.get('const.float')
+			if items:
+				for k, v in items.items():
+					self._define_const_float(k, v)
+					
+			# Define string constants
+			items = defines.get('const.string')
+			if items:
+				for k, v in items.items():
+					self._define_const_string(k, v)
+					
+			# Define enum types
+			items = defines.get('type.enum')
+			if items:
+				for k, v in items.items():
+					self._define_type_enum(k, v)
+					
+			# Declare union types
+			items = defines.get('type.union')
+			if items:
+				for k in items:
+					self._define_type_union(k, None)
+					
+			# Declare struct types
+			items = defines.get('type.struct')
+			if items:
+				for k in items:
+					self._define_type_struct(k, None)
+			
+			# Define alias types
+			items = defines.get('type.alias')
+			if items:
+				for k, v in items.items():
+					self._define_type_alias(k, v)
+					
+			# Define union types
+			items = defines.get('type.union')
+			if items:
+				for k, v in items.items():
+					self._define_type_union(k, v)
+					
+			# Define struct types
+			items = defines.get('type.struct')
+			if items:
+				for k, v in items.items():
+					self._define_type_struct(k, v)
+					
+		# Process exports
+		exports = config.get('export')
+		if exports:
+		
+			# Export variables
+			items = exports.get('variable')
+			if items:
+				for k, v in items.items():
+					self._export_variable(k, v)
+					
+			# Export functions
+			items = exports.get('function')
+			if items:
+				for k, v in items.items():
+					self._export_function(k, v)
+		
 	def _define_const_int(self, name, value):
+	
+		# Check duplicates
+		if name in self._namespace:
+			raise ValueError('name: "%s" is already defined' % name)
+
 		# Decode value
 		if isstring(value) and value.startswith('0x'):
 			value = int(value, 16)
@@ -395,34 +492,170 @@ class DLL:
 		self._namespace[name] = value
 		
 	def _define_const_float(self, name, value):
+	
+		# Check duplicates
+		if name in self._namespace:
+			raise ValueError('name: "%s" is already defined' % name)
+
 		# Decode value
 		value = float(value)
 		# Define constant
 		self._namespace[name] = value
 		
 	def _define_const_string(self, name, value):
+	
+		# Check duplicates
+		if name in self._namespace:
+			raise ValueError('name: "%s" is already defined' % name)
+
 		# Define constant
 		self.namespace[name] = value
 		
 	def _define_type_alias(self, name, value):
+	
+		# Check duplicates
+		if name in self._namespace:
+			raise ValueError('name: "%s" is already defined' % name)
+		
 		# Define type alias
 		self._types.set_alias(name, value)
 		self._namespace[name] = self._types.get(name)
 		
 	def _define_type_enum(self, name, data):
-		pass
+	
+		# Check duplicates
+		if name in self._namespace:
+			raise ValueError('name: "%s" is already defined' % name)
+	
+		# Define enum values
+		if data:
+			lo, hi, next = 0, 0, 0
+			for v in data:
+				# Get name and optional value
+				v = [x.strip() for x in v.split('=', 1)]
+				n = v[0]
+				next = next if len(v) == 1 else int(v[1])
+				
+				# Check duplicates
+				if name in self._namespace:
+					raise ValueError('data: "%s" is already defined' % n)
+				
+				# Set enum value
+				self._namespace[n] = next
+				
+				# Update
+				lo = min(lo, next)
+				hi = max(hi, next)
+				next += 1
+				
+		# Define enum type
+		if lo < 0:
+			hi = max(hi, -lo)
+			type = ctypes.c_int64
+			limits = [(1 << 7, ctypes.c_int8), (1 << 15, ctypes.c_int16), (1 << 31, ctypes.c_int32)]
+		else:
+			type = ctypes.c_uint64
+			limits = [(1 << 8, ctypes.c_uint8), (1 << 16, ctypes.c_uint16), (1 << 32, ctypes.c_uint32)]
+		
+		for l, t in limits:
+			if hi < l:
+				type = t
+		
+		self._types.set(name, 'Enum %s' % name, type)
+		self._namespace[name] = type
+		
 		
 	def _define_type_union(self, name, data):
-		pass
+	
+		# Errors
+		def error_duplicate():
+			raise ValueError('name: "%s" is already defined' % name)
+		
+		# Declare union
+		if name in self._namespace:
+			union = self._namespace.get(name)
+			# Check union type
+			issubclass(union, ctypes.Union) or error_duplicate()
+			# Check incomplete union
+			(not hasattr(union, '_fields_')) or (union._fields_ is None) or error_duplicate()
+		else:
+			union = type(name, (ctypes.Union, ), {})
+			self._types.set(name, 'Union %s'  % name, union)
+			self._namespace[name] = union
+		
+		# Define union
+		if data is not None:
+			fields = []
+			for v in data:
+				# Get name and type
+				field, type = [x.strip() for x in v.split(':', 1)]
+				# Resolve field type
+				fields.append((field, self._types.get(type)))
+				
+			# Define fields
+			union._fields_ = fields
 		
 	def _define_type_struct(self, name, data):
-		pass
+	
+		# Errors
+		def error_duplicate():
+			raise ValueError('name: "%s" is already defined' % name)
 		
-	def _export_var(self, name, data):
-		pass
+		# Declare struct
+		if name in self._namespace:
+			struct = self._namespace.get(name)
+			# Check struct type
+			issubclass(struct, ctypes.Structure) or error_duplicate()
+			# Check incomplete struct
+			(not hasattr(struct, '_fields_')) or (struct._fields_ is None) or error_duplicate()
+		else:
+			struct = type(name, (ctypes.Structure, ), {})
+			self._types.set(name, 'Struct %s'  % name, struct)
+			self._namespace[name] = struct
+		
+		# Define struct
+		if data is not None:
+			fields = []
+			for v in data:
+				# Get name and type
+				fn, ft = [x.strip() for x in v.split(':', 1)]
+				# Resolve field type
+				fields.append((fn, self._types.get(ft)))
+			
+			# Define fields
+			struct._fields_ = fields
+		
+	def _export_variable(self, name, data):
+	
+		# Check duplicates
+		if name in self._namespace:
+			raise ValueError('name: "%s" is already defined' % name)
+		
+		# Decode data
+		if isstring(data):
+			dllname, type = name, data
+		else:
+			dllname, type = data[:2]
+		
+		# Get variable
+		type = self._types.get(type)
+		self._namespace[name] = type.in_dll(self._binary, "name")
 		
 	def _export_function(self, name, data):
-		pass
+	
+		# Check duplicates
+		if name in self._namespace:
+			raise ValueError('name: "%s" is already defined' % name)
+		
+		# Decode data
+		if isstring(data):
+			dllname, type = name, data
+		else:
+			dllname, type = data[:2]
+		
+		# Get function
+		type = self._types.get(type)
+		self._namespace[name] = ctypes.cast(getattr(self._binary, dllname), type)
 		
 def isstring(obj):
 	'''Detects if the object is any of the two string types'''
