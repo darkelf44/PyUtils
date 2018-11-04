@@ -101,6 +101,10 @@ class Types(object):
 			'F64' : ('F64', 'IEEE float (64)', ctypes.c_double),
 		})
 		
+	def has(self, type):
+		info = self.get_typeinfo(type.strip())
+		return info is not None
+		
 	def get(self, type, calltype='cdecl'):
 		# Remove some whitespace
 		type = type.strip()
@@ -173,6 +177,10 @@ class Types(object):
 			return ctypes.WINFUNCTYPE(result, *params)
 		else:
 			raise ValueError('calltype: Invalid value')
+			
+	@classmethod
+	def isident(cls, text):
+		return text and not text[:1].isdigit() and text.replace('_', '').isalnum()
 		
 	@classmethod
 	def tokenize(cls, text):
@@ -198,7 +206,7 @@ class Types(object):
 		
 		# Calltype prefix "cdecl:" or "stdcall:"
 		calltype = 'cdecl'
-		if len(expr) > 1 and expr[1] == ':' and not expr[0][:1].isnumeric() and expr[0].replace('_', '').isalnum() :
+		if len(expr) > 1 and expr[1] == ':' and cls.isident(expr[0]) :
 			calltype, expr = expr[0], expr[2:]
 
 		# The state machine for grammar:
@@ -264,7 +272,7 @@ class Types(object):
 				result[-1] = ('[]', result[-1], int(t))
 				state += 1
 			elif t is not None:
-				(state in (0, 2, 6)) and t.replace('_', '').isalnum() or error_unexpected(i)
+				(state in (0, 2, 6)) and cls.isident(t) or error_unexpected(i)
 				result.append(t)
 				state = {0:3, 2:3, 6:7}[state]
 		
@@ -275,7 +283,7 @@ class Types(object):
 		# Final check and result
 		(state in (0, 3, 7)) and (len(result) == 1) or error_unfinished()
 		return result[0]
-		
+				
 class DLL(object):
 
 	# Path to load
@@ -402,80 +410,54 @@ class DLL(object):
 	
 		# Library version
 		self.version = config.get('version')
-	
+		
 		# Process defines
 		defines = config.get('define')
 		if defines:
-			
-			# Define integer constants
-			items = defines.get('const.int')
-			if items:
-				for k, v in items.items():
-					self._define_const_int(k, v)
-					
-			# Define floating point constants
-			items = defines.get('const.float')
-			if items:
-				for k, v in items.items():
-					self._define_const_float(k, v)
-					
-			# Define string constants
-			items = defines.get('const.string')
-			if items:
-				for k, v in items.items():
-					self._define_const_string(k, v)
-					
-			# Define enum types
-			items = defines.get('type.enum')
-			if items:
-				for k, v in items.items():
-					self._define_type_enum(k, v)
-					
-			# Declare union types
-			items = defines.get('type.union')
-			if items:
-				for k in items:
-					self._define_type_union(k, None)
-					
-			# Declare struct types
-			items = defines.get('type.struct')
-			if items:
-				for k in items:
-					self._define_type_struct(k, None)
-			
-			# Define alias types
-			items = defines.get('type.alias')
-			if items:
-				for k, v in items.items():
-					self._define_type_alias(k, v)
-					
-			# Define union types
-			items = defines.get('type.union')
-			if items:
-				for k, v in items.items():
-					self._define_type_union(k, v)
-					
-			# Define struct types
-			items = defines.get('type.struct')
-			if items:
-				for k, v in items.items():
-					self._define_type_struct(k, v)
+		
+			# Define constants
+			group = defines.get("const")
+			if group:
+				for item in group:
+					k, t, v = item
+					if t in ('I', 'int'):
+						self._define_const_int(k, v)
+					elif t in ('F', 'float'):
+						self._define_const_float(k, v)
+					elif t in ('S', 'string'):
+						self._define_const_string(k, v)
+						
+			# Define types
+			group = defines.get("type")
+			if group:
+				for item in group:
+					k, t, v = item
+					if t in ('=', 'alias'):
+						self._define_type_alias(k, v)
+					elif t == 'enum':
+						self._define_type_enum(k, v)
+					elif t == 'union':
+						self._define_type_union(k, v)
+					elif t == 'struct':
+						self._define_type_struct(k, v)
 					
 		# Process exports
 		exports = config.get('export')
 		if exports:
 		
 			# Export variables
-			items = exports.get('variable')
-			if items:
-				for k, v in items.items():
-					self._export_variable(k, v)
+			group = exports.get('variable')
+			if group:
+				for item in group:
+					k, n, v = item
+					self._export_variable(k, n, v)
 					
 			# Export functions
-			items = exports.get('function')
-			if items:
-				for k, v in items.items():
-					self._export_function(k, v)
+			group = exports.get('function')
+			if group:
+				for item in group:
+					k, n, v = item
+					self._export_function(k, n, v)
 		
 	def _define_const_int(self, name, value):
 	
@@ -625,33 +607,29 @@ class DLL(object):
 			# Define fields
 			struct._fields_ = fields
 		
-	def _export_variable(self, name, data):
+	def _export_variable(self, name, dllname, type):
 	
 		# Check duplicates
 		if name in self._namespace:
 			raise ValueError('name: "%s" is already defined' % name)
 		
 		# Decode data
-		if isstring(data):
-			dllname, type = name, data
-		else:
-			dllname, type = data[:2]
-		
+		if (dllname) is None:
+			dllname = name
+			
 		# Get variable
 		type = self._types.get(type)
 		self._namespace[name] = type.in_dll(self._binary, "name")
 		
-	def _export_function(self, name, data):
+	def _export_function(self, name, dllname, type):
 	
 		# Check duplicates
 		if name in self._namespace:
 			raise ValueError('name: "%s" is already defined' % name)
 		
 		# Decode data
-		if isstring(data):
-			dllname, type = name, data
-		else:
-			dllname, type = data[:2]
+		if (dllname) is None:
+			dllname = name
 		
 		# Get function
 		type = self._types.get(type)
