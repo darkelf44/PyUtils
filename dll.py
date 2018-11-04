@@ -579,7 +579,7 @@ class DLL(object):
 			# Check incomplete union
 			(not hasattr(union, '_fields_')) or (union._fields_ is None) or error_duplicate()
 		else:
-			union = type(name, (ctypes.Union, ), {})
+			union = type(str(name), (ctypes.Union, ), {})
 			self._types.set(name, 'Union %s'  % name, union)
 			self._namespace[name] = union
 		
@@ -609,7 +609,7 @@ class DLL(object):
 			# Check incomplete struct
 			(not hasattr(struct, '_fields_')) or (struct._fields_ is None) or error_duplicate()
 		else:
-			struct = type(name, (ctypes.Structure, ), {})
+			struct = type(str(name), (ctypes.Structure, ), {})
 			self._types.set(name, 'Struct %s'  % name, struct)
 			self._namespace[name] = struct
 		
