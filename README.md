@@ -1,19 +1,30 @@
-# Python Utilities
+# PyUtils - A collection of python utilities
 
-This a collection of standalone utility modules for python. Each module is centered around specific tasks, problems, features and categories, and usually they don't depend on each other. You can download and use a specific module you need, or you can download them all.
+This a collection of standalone utility modules for python.
 
-## Installation
+Each module is a single separate python file, with a single theme in mind, and their only allowed dependency is the
+standard library of python. Most modules should work with both python 2.7 and python 3.
 
-Nothing to install. Just download the module you want, drop it in your project, and use it as you see fit!
+## Getting Started
+
+### Installation
+
+Just copy the python file for the module you want into your source folder and use it. They have no dependencies, other
+than the python standard library. But if you are using python 2, make sure that it is version 2.7 or newer.
 
 ## Modules
 
-TODO
+- dll - Use language independent JSON files to load and use dynamic libraries!
 
-## Contributors
+## Contributing
 
-Maybe later
+No need to do so
+
+## Authors
+
+- darkelf44
 
 ## License
 
-Licensed under the MIT License, you can read about it here: https://opensource.org/licenses/MIT
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
+
