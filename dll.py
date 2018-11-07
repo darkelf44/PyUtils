@@ -171,12 +171,19 @@ class Types(object):
 		
 	def _function(self, params, result, calltype):
 		'''Create type value for functions'''
-		if calltype == 'cdecl':
-			return ctypes.CFUNCTYPE(result, *params)
-		elif calltype == 'stdcall':
-			return ctypes.WINFUNCTYPE(result, *params)
+		if params and params[-1] == '...':
+			# HACK: wiping argtypes creates an typeless function. For now arguments vararg functions aremain fully unchecked
+			result = self._function(params, result, calltype)
+			result.argtypes = None
+			return result
 		else:
-			raise ValueError('calltype: Invalid value')
+			# Normal function
+			if calltype == 'cdecl':
+				return ctypes.CFUNCTYPE(result, *params)
+			elif calltype == 'stdcall':
+				return ctypes.WINFUNCTYPE(result, *params)
+			else:
+				raise ValueError('calltype: Invalid value')
 			
 	@classmethod
 	def isident(cls, text):
@@ -212,17 +219,14 @@ class Types(object):
 		# The state machine for grammar:
 		#	Start: (0)	End: (0) (3) (7)
 		#	(0), (2) ---[id]--> (3) ---'*'---> (3) ---'['--> (4) ---[num]--> (5) ---']'--> (3) ---','--> (2)
+		#	(0), (2) ---'...'--> (10) ---'->'--> (6)
 		#	(6) ---[id]--> (7) ---'*'---> (7) ---'['--> (8) ---[num]--> (9) ---']'--> (7)
 		#	(0), (3) ---'->'--> (6)
 		#	(0)  ---'('--> (0) + push
 		#	(2)  ---'('--> (0) + push 
 		#	(6)  ---'('--> (0) + push 
-		#	(3), (7) ---')'--> pop (?)
+		#	(3), (7), (10) ---')'--> pop (?)
 		#	(1)  ---'->'--> (6)
-		
-		# TODO: Additional grammar for '...'
-		#	(2)  ---'...'--> (10) ---'->'--> (6)
-		#	(10) ---')'--> pop (?)
 		
 		state = 0
 		state_stack = []
@@ -232,7 +236,7 @@ class Types(object):
 		# Process tokens
 		for i, t in enumerate(expr):
 			if t == '->':
-				(state in (0, 1, 3)) or error_unexpected(i)
+				(state in (0, 1, 3, 10)) or error_unexpected(i)
 				state = 6
 				result = [result]
 			elif t == ',':
@@ -244,6 +248,9 @@ class Types(object):
 			elif t == '[':
 				(state in (3, 7)) or error_unexpected(i)
 				state += 1
+			elif t == '...':
+				(state in (0, 2)) or error_unexpected(i)
+				state = 10
 			elif t == ']':
 				(state in (5, 9)) or error_unexpected(i)
 				state -= 2
@@ -259,7 +266,7 @@ class Types(object):
 				if state == 7:
 					result = [('->', tuple(result[0]), result[1], calltype)]
 				# Unify results
-				if state == 0 or (state == 3 and len(result) > 1):	# Allows you to use "(A, B) -> C"
+				if state in (0, 10) or (state == 3 and len(result) > 1):	# Allows you to use "(A, B) -> C" but not "(A) -> B"
 					(state_stack[-1] == 0) or error_unexpected(i)
 					state = 1
 				else:
@@ -426,6 +433,8 @@ class DLL(object):
 						self._define_const_float(k, v)
 					elif t in ('S', 'string'):
 						self._define_const_string(k, v)
+					elif t in ('W', 'wstring'):
+						self._define_const_wstring(k, v)
 						
 			# Define types
 			group = defines.get("type")
@@ -491,7 +500,16 @@ class DLL(object):
 			raise ValueError('name: "%s" is already defined' % name)
 
 		# Define constant
-		self.namespace[name] = value
+		self._namespace[name] = value.encode('utf-8')
+		
+	def _define_const_wstring(self, name, value):
+	
+		# Check duplicates
+		if name in self._namespace:
+			raise ValueError('name: "%s" is already defined' % name)
+
+		# Define constant
+		self._namespace[name] = value
 		
 	def _define_type_alias(self, name, value):
 	
