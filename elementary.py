@@ -176,6 +176,7 @@ class resource:
 				for cls in resource.loader_hooks:
 					try:
 						loader = cls(base)
+						break
 					except:
 						pass
 				# Save loader (even if its None)
@@ -199,13 +200,9 @@ class resource:
 						return io.open(os.path.normpath(base + '/' + path), 'rb')
 				except:
 					pass
-		
-		# Python 2/3 support
-		if sys.version_info > (3, 0):
-			FileNotFoundError = IOError
 			
 		# Not found
-		raise FileNotFoundError(2, 'Resource not found: %r' % path)
+		raise IOError(2, 'Resource not found: %r' % path)
 	
 	def local_open(path):
 		'''Works like resource.open, but the path is always interpreted as a relative path'''
@@ -229,33 +226,37 @@ class resource:
 		zipfile_cache = {}
 		
 		def __init__(self, path):
-		
 			# Find filesystem prefix
-			prefix = path
+			prefix, suffix = path, []
 			while prefix and not _ospath.exists(prefix):
-				prefix = _ospath.split(prefix)
+				prefix, part = _ospath.split(prefix)
+				suffix.append(part)
 				
 			# Split the filesystem part from the archive part
 			if _ospath.isfile(prefix):
-				self.path, self.prefix = prefix, _ospath.relpath(path, prefix)
+				self.path, self.prefix = prefix, '/'.join(suffix)
 			else:
 				raise ImportError()
 				
 			# Open the zip file (to check if it's a zip file)
 			try:
-				self.file = zipfile_cache[self.path]
+				self.file = self.zipfile_cache[self.path]
 			except KeyError:
-				zipfile_cache[self.path] = _zipfile.ZipFile(self.path, 'r')
-				
-		def open(self, path):
-			# Open the zip file (to check if it's a zip file)
-			try:
-				zfile = zipfile_cache[self.path]
-			except KeyError:
-				zfile = zipfile_cache[self.path] = _zipfile.ZipFile(self.path, 'r')
+				self.zipfile_cache[self.path] = _zipfile.ZipFile(self.path, 'r')
 			
-			# Return the stream
-			return zfile.open(filename, 'r')
+		def open(self, path):
+			# Open the zip file
+			try:
+				zfile = self.zipfile_cache[self.path]
+			except KeyError:
+				zfile = self.zipfile_cache[self.path] = _zipfile.ZipFile(self.path, 'r')
+			
+			# Add prefix
+			if self.prefix:
+				path = self.prefix + '/' + path
+			
+			# Return the resource
+			return zfile.open(path, 'r')
 				
 		@classmethod
 		def cleanup(cls):
