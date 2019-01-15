@@ -214,32 +214,56 @@ class resource:
 	def global_open(path):
 		'''Works like resource.open, but the path is always interpreted as an absolute path'''
 		return resource.open(_posixpath.join('/', path), verbose=verbose)
+		
+	def cleanup():
+		'''Calls the cleanup method of all cached loaders, to free up cached resources'''
+		for loader in resource.loader_cache.values():
+			loader.cleanup()
 	
 	class ZipLoader(object):
 		'''Resource loader hook for ZIP archives'''
 		
 		__slots__ = ('path', 'prefix')
 		
+		# ZipFile cache to avoid opening the same file multiple times
+		zipfile_cache = {}
+		
 		def __init__(self, path):
 		
-			# Find existing prefix
+			# Find filesystem prefix
 			prefix = path
 			while prefix and not _ospath.exists(prefix):
 				prefix = _ospath.split(prefix)
 				
-			# Split the os part from the file part
+			# Split the filesystem part from the archive part
 			if _ospath.isfile(prefix):
 				self.path, self.prefix = prefix, _ospath.relpath(path, prefix)
 			else:
 				raise ImportError()
 				
-			# Check that the file is a zip file
-			if not _zipfile.is_zipfile(self.path):
-				raise ImportError()
+			# Open the zip file (to check if it's a zip file)
+			try:
+				self.file = zipfile_cache[self.path]
+			except KeyError:
+				zipfile_cache[self.path] = _zipfile.ZipFile(self.path, 'r')
 				
 		def open(self, path):
-			with _zipfile.ZipFile(self.path, 'r') as zfile:
-				return zfile.open(filename, 'r')
+			# Open the zip file (to check if it's a zip file)
+			try:
+				zfile = zipfile_cache[self.path]
+			except KeyError:
+				zfile = zipfile_cache[self.path] = _zipfile.ZipFile(self.path, 'r')
+			
+			# Return the stream
+			return zfile.open(filename, 'r')
+				
+		@classmethod
+		def cleanup(cls):
+			# Close all the open zip files, and empty the cache
+			if cls.zipfile_cache:
+				zipfiles, cls.zipfile_cache = cls.zipfile_cache, {}
+				for zfile in zipfiles.values():
+					zfile.close()
 				
 	# Register resource loaders
 	loader_hooks += [ZipLoader]
