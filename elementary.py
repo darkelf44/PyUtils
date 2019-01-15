@@ -1,3 +1,5 @@
+'''Elementary additions to standard Python'''
+
 from __future__ import print_function
 from __future__ import absolute_import
 
@@ -10,8 +12,13 @@ import os.path as _ospath
 import ntpath as _ntpath
 import posixpath as _posixpath
 
-version = (0, 1, 1)
-versionstr = '%d.%d.%d' % version
+# ------------------------------------------------------------ #
+#	Versioning 
+# ------------------------------------------------------------ #
+
+version = (0, 1, 2)
+versionstring = '%d.%d.%d' % version
+
 
 # ------------------------------------------------------------ #
 #	Classes 
@@ -36,6 +43,7 @@ class namespace:
 	
 	def __repr__(self):
 		return 'namespace(%r)' % self.__dict__
+
 
 # ------------------------------------------------------------ #
 #	Keyword functions
@@ -74,7 +82,7 @@ def _try(f, filter=None, onexcept=None, onfinally=None):
 def _raise(x):
 	'''Raise statement as function'''
 	raise x
-	
+
 
 # ------------------------------------------------------------ #
 #	Import functions
@@ -94,6 +102,28 @@ def global_import(name):
 	__import__(name, None, None, None, 0)
 	return sys.modules[name]
 
+
+# ------------------------------------------------------------ #
+#	Utility functions
+# ------------------------------------------------------------ #
+
+@decorator
+def scope(f):
+	'''Assign the result of a function after its definition to create an enclosing scope'''
+	# Execute scope
+	result = f()
+	
+	# Inherit attributes
+	for attr in scope.inherit:
+		if hasattr(f, attr):
+			setattr(result, attr, getattr(f, attr))
+	
+	# Return exports
+	return f()
+	
+scope.inherit = ['__name__', '__doc__']
+
+
 # ------------------------------------------------------------ #
 #	Resource functions
 # ------------------------------------------------------------ #
@@ -101,69 +131,119 @@ def global_import(name):
 @namespace
 class resource:
 
-	def local_open(path, verbose=False):
-		'''
-		Open a resouce file, relative to the current module's path.
-		
-		Works like resource.global_open, except the path here is relative to the current module name (that's the module
-		name and not the file name).
-		
-		path - Relative path to the resouce, separated with '/' characters.
-		
-		verbose - Print warnings to stderr, when finding oddities in sys.path
-		
-		Returns the resource stream, opened in binary mode. Use io.TextIOWrapper when reading text files to get a
-		character stream from the result.
-		'''
-		base = sys._getframe(1).f_globals['__name__'].replace('.', '/')
-		path = '/'.join([base, path.lstrip('/')])
-		return resource.global_open(path, verbose=verbose)
+	# Resource only path - searched before sys.path
+	path = []
 
-	def global_open(path, verbose=False):
+	# Resource loader hooks - similar to sys.path_hooks
+	loader_hooks = []
+
+	# Resource loader cache - similar to sys.path_importer_cache
+	loader_cache = {}
+
+	def open(path, module=None, verbose=False):
 		'''
-		Open a resouce file, with an absolute path, using sys.path.
+		Open a resouce file
 		
 		Finds a resource file in sys.path similarly, how modules are found, and opens it. Works with both directories
-		and archive files in sys.path. The entries in sys.path are searched for the resource in the order they appear,
-		but unlike when inporting, the parent directories don't need to be python modules (no need for __init__.py
-		files), and can appear in multiple times in sys.path.
+		and archive files in sys.path. Relative paths work, like relative imports, it adds the parent module names to
+		the path, but still the whole sys.path is searched.
 		
-		path - Absolute path to the resouce, separated with '/' characters.
+		path - Path to the resource, separated with '/' characters. Absolute paths begin with a '/' character
 		
-		verbose - Print warnings to stderr, when finding oddities in sys.path
+		module - The module name for relative imports. Ignored with absolute imports.
+		
+		verbose - Not used
 		
 		Returns the resource stream, opened in binary mode. Use io.TextIOWrapper when reading text files to get a
 		character stream from the result.
 		'''
-		# Make the path relative
-		path = path.lstrip('/')
-		for base in sys.path:
-			if not base:
-				# Current directory
-				if os.path.isrelative(path):
-					filename = os.path.normpath(path)
-					if os.path.isfile(filename):
-						return io.open(filename, 'rb')
-			elif os.path.isdir(base):
-				# Normal directory
-				if os.path.isrelative(path):
-					filename = os.path.normpath(base + '/' + path)
-					if os.path.isfile(filename):
-						return io.open(filename, 'rb')
-			elif os.path.isfile(base):
-				# Archive File
+		
+		# Get absolute path in a relative format
+		if path.startswith('/'):
+			path = path.lstrip('/')
+		else:
+			module = module or sys._getframe(1).f_globals['__name__']
+			path = '/'.join([module.replace('.', '/'), path.lstrip('/')])
+			
+		# Search sys.path
+		for base in (resource.path + sys.path):
+			# Consult loader cache
+			try:
+				loader = None
+				loader = resource.loader_cache[base]
+			except KeyError:
+				# Find loader for resource
+				for cls in resource.loader_hooks:
+					try:
+						loader = cls(base)
+					except:
+						pass
+				# Save loader (even if its None)
+				resource.loader_cache[base] = loader
+				
+			# Open resource
+			if loader is not None:
+				# Try opening the resource
 				try:
-					filename = _posixpath.normpath(path)
-					with _zipfile.ZipFile(base, 'r') as zfile:
-						try:
-							return zfile.open(filename, 'r')
-						except KeyError:
-							pass
-				except _zipfile.BadZipFile:
-					if verbose:
-						print('Warning: Entry in sys.path is not an archive nor a directory: %r' % base)
-		# Resource not found
-		raise FileNotFoundError('No such a resouce: %r' % path)
+					return loader.open(path)
+				except:
+					pass
+			
+			# System path are searched only, if the resource path is a valid, relative path on the system
+			elif _ospath.isrelative(path):
+				# Try to open the resource
+				try:
+					if not base:
+						return io.open(os.path.normpath(path), 'rb')
+					elif _ospath.isdir(base):
+						return io.open(os.path.normpath(base + '/' + path), 'rb')
+				except:
+					pass
+		
+		# Python 2/3 support
+		if sys.version_info > (3, 0):
+			FileNotFoundError = IOError
+			
+		# Not found
+		raise FileNotFoundError(2, 'Resource not found: %r' % path)
+	
+	def local_open(path):
+		'''Works like resource.open, but the path is always interpreted as a relative path'''
+		return resource.open(path.lstrip('/'), module=sys._getframe(1).f_globals['__name__'], verbose=verbose)
+
+	def global_open(path):
+		'''Works like resource.open, but the path is always interpreted as an absolute path'''
+		return resource.open(_posixpath.join('/', path), verbose=verbose)
+	
+	class ZipLoader(object):
+		'''Resource loader hook for ZIP archives'''
+		
+		__slots__ = ('path', 'prefix')
+		
+		def __init__(self, path):
+		
+			# Find existing prefix
+			prefix = path
+			while prefix and not _ospath.exists(prefix):
+				prefix = _ospath.split(prefix)
+				
+			# Split the os part from the file part
+			if _ospath.isfile(prefix):
+				self.path, self.prefix = prefix, _ospath.relpath(path, prefix)
+			else:
+				raise ImportError()
+				
+			# Check that the file is a zip file
+			if not _zipfile.is_zipfile(self.path):
+				raise ImportError()
+				
+		def open(self, path):
+			with _zipfile.ZipFile(self.path, 'r') as zfile:
+				return zfile.open(filename, 'r')
+				
+	# Register resource loaders
+	loader_hooks += [ZipLoader]
+
 
 # ------------------------------------------------------------ #
 #	Fixing stdio, stderr
@@ -179,6 +259,7 @@ if sys.version_info > (3, 0):
 		_params = dict(encoding=sys.stderr.encoding, errors='replace', newline=sys.stderr.newlines, line_buffering=sys.stderr.line_buffering)
 		sys.stderr = io.TextIOWrapper(sys.stderr.detach(), **_params)
 		del _params
+
 
 # ------------------------------------------------------------ #
 #	Extending os.path
@@ -197,8 +278,8 @@ def _ospath_isrelative(path):
 	return not _ospath.isabs(path)
 
 # Ensure os.path.isabsolute and os.path.isrelative always exists
-os.path.isabsolute = os.path.isabs
-os.path.isrelative = _ospath_isrelative
+_ospath.isabsolute = _ospath.isabs
+_ospath.isrelative = _ospath_isrelative
 
 # Deprecate ntpath.isabs
 _ntpath.isabs.__doc__ = '''[Deprecated by elementary]: Use isabsolute or isrelative instead'''
@@ -206,6 +287,7 @@ _ntpath.isabs.__doc__ = '''[Deprecated by elementary]: Use isabsolute or isrelat
 # Update functions on ntpath
 _ntpath.isabsolute = _ntpath_isabsulute
 _ntpath.isrelative = _ntpath_isrelative
+
 
 # ------------------------------------------------------------ #
 #	Export to builtins
