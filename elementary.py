@@ -16,7 +16,7 @@ import posixpath as _posixpath
 #	Versioning 
 # ------------------------------------------------------------ #
 
-version = (0, 1, 2)
+version = (0, 1, 3)
 versionstring = '%d.%d.%d' % version
 
 
@@ -130,6 +130,22 @@ scope.inherit = ['__name__', '__doc__']
 
 @namespace
 class resource:
+	'''
+		Resource loader functions
+		
+		The hooks and machinery for finding and loading resources mirrors the way the import machinery works.
+		
+		'elementary.resource.path' - These resource only paths are searched before 'sys.path', allowing you to add
+		resources from untrusted locations, or use archives to override only the resources of your program.
+		
+		'elementary.resource.loader_hooks' - Much like 'sys.path_hooks' the classes in this list get called for each entry in
+		the resource paths to handle that path. If '__init__' does not fail, then the resulting object is used to find
+		and load resources from that path entry.
+		
+		'elementary.resource.loader_cache' - Much like 'sys.path_importer_cache', the resource loaders created from
+		loader_hooks are cached in here. If the path was a simple filesystem path, and no resource loaded was created,
+		then 'None' is cached here.
+	'''
 
 	# Resource only path - searched before sys.path
 	path = []
@@ -139,7 +155,7 @@ class resource:
 
 	# Resource loader cache - similar to sys.path_importer_cache
 	loader_cache = {}
-
+	
 	def open(path, module=None, verbose=False):
 		'''
 		Open a resouce file
@@ -203,15 +219,30 @@ class resource:
 			
 		# Not found
 		raise IOError(2, 'Resource not found: %r' % path)
-	
-	def local_open(path):
+
+	def local_open(path, verbose=False):
 		'''Works like resource.open, but the path is always interpreted as a relative path'''
 		return resource.open(path.lstrip('/'), module=sys._getframe(1).f_globals['__name__'], verbose=verbose)
 
-	def global_open(path):
+	def global_open(path, verbose=False):
 		'''Works like resource.open, but the path is always interpreted as an absolute path'''
 		return resource.open(_posixpath.join('/', path), verbose=verbose)
-		
+
+	def get(path, module=None, verbose=False):
+		'''Works line resource.open, but it returns a bytes object with the contents of the resource'''
+		with resource.open(path, module or sys._getframe(1).f_globals['__name__'], verbose) as res:
+			return res.read()
+
+	def local_get(path, module=None, verbose=False):
+		'''Works like resource.get, but the path is always interpreted as a relative path'''
+		with resource.open(path.lstrip('/'), module or sys._getframe(1).f_globals['__name__'], verbose) as res:
+			return res.read()
+
+	def global_get(path, verbose=False):
+		'''Works like resource.get, but the path is always interpreted as a relative path'''
+		with resource.open(_posixpath.join('/', path), verbose) as res:
+			return res.read()
+
 	def cleanup():
 		'''Calls the cleanup method of all cached loaders, to free up cached resources'''
 		for loader in resource.loader_cache.values():
@@ -291,7 +322,7 @@ if sys.version_info > (3, 0):
 # ------------------------------------------------------------ #
 
 def _ntpath_isabsulute(path):
-	'''Checks if a path is fully absolute on windows (does not depend on eith the current directory or the current drive)'''
+	'''Checks if a path is fully absolute on windows (does not depend on the current directory or the current drive)'''
 	return (_ntpath.splitdrive(path)[0] or _ntpath.splitunc(path)[0]) and _ntpath.isabs(path)
 	
 def _ntpath_isrelative(path):

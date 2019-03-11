@@ -3,6 +3,10 @@ import re
 import json
 import ctypes
 
+# Library version
+version = (1, 0, 0)
+versionstring = '%d.%d.%d' % version
+
 class Types(object):
 
 	'''
