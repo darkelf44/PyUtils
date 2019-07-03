@@ -27,6 +27,11 @@ class Types(object):
 		
 		TODO:
 	'''
+	
+	CALLTYPES = {
+		'@cdecl' : 'cdecl',
+		'@stdcall' : 'stdcall',
+	}
 
 	def __init__(self, stdc=False, stddef=False, stdint=False, dlltype=False):
 		# Init
@@ -145,7 +150,11 @@ class Types(object):
 	__setitem__ = set
 	
 	def build(self, type):
-		if isinstance(type, tuple):
+		if type == '()':
+			return None
+		elif type == '...':
+			return '...'
+		else:
 			op, nodes = type[0], type[1:]
 			if op == '*':
 				return self._pointer(self.build(nodes[0]))
@@ -153,35 +162,34 @@ class Types(object):
 				return self._array(self.build(nodes[0]), nodes[1])
 			elif op == '->':
 				return self._function(tuple(self.build(x) for x in nodes[0]), self.build(nodes[1]), nodes[2])
+			elif op == 'id':
+				info = self.get_typeinfo(nodes[0])
+				if info is not None:
+					return info[2]
+				else:
+					print(self._list)
+					raise ValueError('type: Undefined type: %s' % type)
 			else:
 				raise ValueError('type: Invalid operator: %s' % op)
-		elif isstring(type):
-			info = self.get_typeinfo(type)
-			if info is not None:
-				return info[2]
-			else:
-				print(self._list)
-				raise ValueError('type: Undefined type: %s' % type)
-		else:
-			raise ValueError('type: Invalid tree')
 	
 	def _pointer(self, type):
 		'''Create type value for pointer'''
 		return ctypes.POINTER(type)
-
+	
 	def _array(self, type, length):
 		'''Create type value for array'''
-		return type * length
-		
+		return type * (length or 0)
+	
 	def _function(self, params, result, calltype):
 		'''Create type value for functions'''
-		if params and params[-1] == '...':
-			# HACK: wiping argtypes creates an typeless function. For now arguments vararg functions aremain fully unchecked
-			result = self._function(params, result, calltype)
-			result.argtypes = None
+		if '...' in params:
+			# Vararg function
+			result = self._function([], result, calltype)
+			result.argtypes = None	# HACK: wiping argtypes creates an typeless function
 			return result
 		else:
 			# Normal function
+			calltype = calltype or 'cdecl'
 			if calltype == 'cdecl':
 				return ctypes.CFUNCTYPE(result, *params)
 			elif calltype == 'stdcall':
@@ -189,9 +197,13 @@ class Types(object):
 			else:
 				raise ValueError('calltype: Invalid value')
 			
-	@classmethod
-	def isident(cls, text):
+	@staticmethod
+	def isident(text):
 		return text and not text[:1].isdigit() and text.replace('_', '').isalnum()
+		
+	@staticmethod
+	def isinteger(text):
+		return text and text.isdigit()
 		
 	@classmethod
 	def tokenize(cls, text):
@@ -212,95 +224,201 @@ class Types(object):
 		def error_unfinished():
 			raise ValueError('text: Unfinished expression: "%s"' % ' '.join(expr[:i]))
 		
+		#	Type ::=
+		#		Expression
+		#	|
+		#		ExpressionList [ CallingConvention ] '->' ResultType
+		#	|
+		#		'(' [ ExpressionList ] ')' [ CallingConvention ] '->' ResultType
+		#	
+		#	Expression ::=
+		#		IDENTIFIER [ '[' [ NUMBER ] ']' | '*' ] ...
+		#	|
+		#		'(' Type ')' [ '[' [ NUMBER ] ']' | '*' ] ...
+		#
+		#	ExpressionList ::= Expression [ ',' Expression ] ... [ '...' ]
+		#	
+		#	CallingConvention ::= '@' + IDENTIFIER
+		#	ResultType ::= '(' ')' | Type
+		
+		level = [0]
+		def trace(f):
+			def inner(*args, **kwargs):
+				indent = '| ' * level[0]
+				p = ", ".join([repr(x) for x in args] + ["%s=%r" % x for x in kwargs.items()])
+				print('{indent}ENTER: {func} ({params})'.format(func=f.__name__, params=p, indent=indent))
+				level[0] += 1
+				
+				r = f(*args, **kwargs)
+				
+				level[0] -= 1
+				print('{indent}LEAVE: {func} -> {result}'.format(func=f.__name__, result=r, indent=indent))
+				return r
+			return inner
+		
+		def parse_type(pos):
+			return parse_type_2(pos) or parse_type_1(pos) or parse_expr(pos)
+		
+		def parse_type_1(pos):
+			# Type --> ExpressionList [ CallingConvention ] '->' ResultType
+			try:
+				l, pos = parse_expr_list(pos)
+				c = parse_call_conv(pos)
+				if c:
+					c, pos = c
+				_, pos = parse_tokens(pos, ['->'])
+				r, pos = parse_result(pos)
+				return ('->', tuple(l), r, c), pos
+			except TypeError:
+				return None
+			
+		def parse_type_2(pos):
+			# Type --> '(' [ ExpressionList ] ')' [ CallingConvention ] '->' ResultType
+			try:
+				_, pos = parse_tokens(pos, ['('])
+				l = parse_expr_list(pos)
+				if l:
+					l, pos = l
+				_, pos = parse_tokens(pos, [')'])
+				c = parse_call_conv(pos)
+				if c:
+					c, pos = c
+				_, pos = parse_tokens(pos, ['->'])
+				r, pos = parse_result(pos)
+				l = l or ()
+				return ('->', tuple(l), r, c), pos
+			except TypeError:
+				return None
+			
+		def parse_expr(pos):
+			return parse_expr_2(pos) or parse_expr_1(pos)
+			
+		def parse_expr_1(pos):
+			# Expression --> IDENTIFIER [ '[' [ NUMBER ] ']' | '*' ] ...
+			try:
+				i, pos = parse_ident(pos)
+			except TypeError:
+				return None
+			t = ('id', i)
+			x = parse_tokens(pos, ['*'], ('*', t)) or parse_expr_a(pos, t)
+			while x:
+				t, pos = x
+				x = parse_tokens(pos, ['*'], ('*', t)) or parse_expr_a(pos, t)
+			return t, pos
+
+		def parse_expr_2(pos):
+			# Expression --> '(' Type ')' [ '[' [ NUMBER ] ']' | '*' ] ...
+			try:
+				_, pos = parse_tokens(pos, ['('])
+				t, pos = parse_type(pos)
+				_, pos = parse_tokens(pos, [')'])
+			except TypeError:
+				return None
+			x = parse_tokens(pos, ['*'], ('*', t)) or parse_expr_a(pos, t)
+			while x:
+				t, pos = x
+				x = parse_tokens(pos, ['*'], ('*', t)) or parse_expr_a(pos, t)
+			return t, pos
+		
+		def parse_expr_a(pos, t):
+			# ??? --> [ '[' [ NUMBER ] ']'
+			try:
+				_, pos = parse_tokens(pos, ['['])
+				n = parse_int(pos)
+				if n:
+					n, pos = n
+				_, pos = parse_tokens(pos, [']'])
+				return ('[]', t, n), pos
+			except TypeError:
+				return None
+				
+		def parse_expr_list(pos):
+			# ExpressionList --> Expression [ ',' Expression ] ... [ '...' ]
+			try:
+				e, pos = parse_expr(pos)
+			except TypeError:
+				return None
+			r = [e]
+			try:
+				c = parse_tokens(pos, [','])
+				while c:
+					c, pos = c
+					e, pos = parse_expr(pos)
+					r.append(e)
+					c = parse_tokens(pos, [','])
+				c = parse_tokens(pos, ['...'])
+				if c:
+					c, pos = c
+					r.append('...')
+				return r, pos
+			except TypeError:
+				return None
+			
+		def parse_call_conv(pos):
+			# CallingConvention --> '@' + IDENTIFIER
+			try:
+				c, pos = parse_any(pos)
+				return cls.CALLTYPES[c], pos
+			except (TypeError, KeyError):
+				return None
+			
+		def parse_result(pos):
+			# ResultType --> '(' ')' | Type
+			return parse_type(pos) or parse_tokens(pos, ['(', ')'], '()')
+		
+		def parse_any(pos):
+			if pos >= expr_len:
+				return None
+			return expr[pos], pos + 1
+		
+		def parse_int(pos):
+			if pos >= expr_len:
+				return None
+			r = expr[pos]
+			if cls.isinteger(r):
+				return r, pos + 1
+			return None
+			
+		def parse_ident(pos):
+			if pos >= expr_len:
+				return None
+			r = expr[pos]
+			if cls.isident(r):
+				return r, pos + 1
+			return None
+		
+		def parse_tokens(pos, l, r=None):
+			if pos >= expr_len:
+				return None
+			n = pos + len(l)
+			if expr[pos:n] == l:
+				return r, n
+			return None
+		
 		# Tokenize the input
 		expr = cls.tokenize(text)
+		expr_len = len(expr)
+		expr_err = None
 		
-		# Calltype prefix "cdecl:" or "stdcall:"
-		calltype = 'cdecl'
-		if len(expr) > 1 and expr[1] == ':' and cls.isident(expr[0]) :
-			calltype, expr = expr[0], expr[2:]
-
-		# The state machine for grammar:
-		#	Start: (0)	End: (0) (3) (7)
-		#	(0), (2) ---[id]--> (3) ---'*'---> (3) ---'['--> (4) ---[num]--> (5) ---']'--> (3) ---','--> (2)
-		#	(0), (2) ---'...'--> (10) ---'->'--> (6)
-		#	(6) ---[id]--> (7) ---'*'---> (7) ---'['--> (8) ---[num]--> (9) ---']'--> (7)
-		#	(0), (3) ---'->'--> (6)
-		#	(0)  ---'('--> (0) + push
-		#	(2)  ---'('--> (0) + push 
-		#	(6)  ---'('--> (0) + push 
-		#	(3), (7), (10) ---')'--> pop (?)
-		#	(1)  ---'->'--> (6)
-		
-		state = 0
-		state_stack = []
-		result = []
-		result_stack = []
-		
-		# Process tokens
-		for i, t in enumerate(expr):
-			if t == '->':
-				(state in (0, 1, 3, 10)) or error_unexpected(i)
-				state = 6
-				result = [result]
-			elif t == ',':
-				(state == 3) or error_unexpected(i)
-				state = 2
-			elif t == '*':
-				(state in (3, 7)) or error_unexpected(i)
-				result[-1] = ('*', result[-1])
-			elif t == '[':
-				(state in (3, 7)) or error_unexpected(i)
-				state += 1
-			elif t == '...':
-				(state in (0, 2)) or error_unexpected(i)
-				state = 10
-			elif t == ']':
-				(state in (5, 9)) or error_unexpected(i)
-				state -= 2
-			elif t == '(':
-				(state in (0, 2, 6)) or error_unexpected(i)
-				state_stack.append(state)
-				state = 0
-				result_stack.append(result)
-				result = []
-			elif t == ')':
-				state_stack and result_stack or error_unexpected(i)
-				# Create function result
-				if state == 7:
-					result = [('->', tuple(result[0]), result[1], calltype)]
-				# Unify results
-				if state in (0, 10) or (state == 3 and len(result) > 1):	# Allows you to use "(A, B) -> C" but not "(A) -> B"
-					(state_stack[-1] == 0) or error_unexpected(i)
-					state = 1
-				else:
-					(state in (3, 7)) or error_unexpected(i)
-					(state_stack[-1] in (0, 2, 6)) or error_unexpected(i)
-					state = {0:3, 2:3, 6:7}[state_stack.pop()]
-				result = result_stack.pop() + result
-			elif t[:1].isdigit():
-				(state in (4, 8)) and t.isdigit() or error_unexpected(i)
-				result[-1] = ('[]', result[-1], int(t))
-				state += 1
-			elif t is not None:
-				(state in (0, 2, 6)) and cls.isident(t) or error_unexpected(i)
-				result.append(t)
-				state = {0:3, 2:3, 6:7}[state]
-		
-		# Create function result
-		if state == 7:
-			result = [('->', tuple(result[0]), result[1], calltype)]
-			
-		# Final check and result
-		(state in (0, 3, 7)) and (len(result) == 1) or error_unfinished()
-		return result[0]
+		# Parse the type
+		try:
+			type, end = parse_type(0)
+			if end != expr_len:
+				raise ValueError('syntax error: Expression is not a valid type!')
+			return type
+		except TypeError:
+			raise ValueError('syntax error: Expression is not a valid type!') 
 				
 class DLL(object):
 
 	# Path to load
 	path = ['.'] + list(sys.path)
-	# Extensions to use
-	exts = ['dll', 'so', 'dlib']
+	# Default extensions
+	exts = ['dlib']
+	if os.name == 'nt':
+		exts += ['dll']
+	else:
+		exts += ['so']
 	# Public dll cache
 	cache = {}
 	
@@ -310,8 +428,8 @@ class DLL(object):
 		self._description = libdesc
 		
 		# Load library
-		self._binary = ctypes.cdll.LoadLibrary(library)
-		self._process(libconf)
+		self._binary = ctypes.cdll.LoadLibrary(os.path.abspath(library))
+		self._process_config(libconf)
 		
 	@classmethod
 	def load(cls, jsonfile, dllfile=None, private=False):
@@ -417,7 +535,7 @@ class DLL(object):
 	def items(self):
 		return self._namespace.items()
 		
-	def _process(self, config):
+	def _process_config(self, config):
 	
 		# Library version
 		self.version = config.get('version')
