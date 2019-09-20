@@ -92,10 +92,12 @@ def local_import(name):
 	'''Import a module, relative to the current module'''
 	base = sys._getframe(1).f_globals['__name__'].split('.')
 	name = str.split(name, '.')
+	if not any(name):
+		name = name[:-1]
 	while name and not name[0]:
 		base, name = base[:-1], name[1:]
 	name = '.'.join(base + name)
-	return global_import(name) if name else None
+	return global_import(name)
 
 def global_import(name):
 	'''Import a module, using absolute import'''
