@@ -187,6 +187,10 @@ class Types(object):
 		return text and not text[:1].isdigit() and text.replace('_', '').isalnum()
 		
 	@staticmethod
+	def islabel(text):
+		return text and text[1:].endswith(':') and text[:-1].replace('_', '').replace('-', '').isalnum()
+		
+	@staticmethod
 	def isinteger(text):
 		return text and text.isdigit()
 		
@@ -358,8 +362,8 @@ class Types(object):
 				return r, n
 			return None
 		
-		# Tokenize the input
-		expr = cls.tokenize(text)
+		# Tokenize the input (and remove labels)
+		expr = [token for token in cls.tokenize(text) if not cls.islabel(token)]
 		expr_len = len(expr)
 		expr_err = None
 		
@@ -753,7 +757,7 @@ default_loader = Loader()
 
 def load(filename, binary=None, private=False):
 	'''Load a dynamic library definition file, using the default loader.'''
-	return default_loader.load(filename, binary=None, private=False)
+	return default_loader.load(filename, binary=binary, private=private)
 
 def generate(filename, language='python', template=None):
 	raise NotImplementedError
