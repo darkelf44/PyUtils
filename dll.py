@@ -2,10 +2,25 @@ import sys, os, io
 import re
 import json
 import ctypes
+import weakref
 
 # Library version
 version = (1, 0, 0)
 versionstring = '%d.%d.%d' % version
+
+# Cross python support
+str = type(u'')
+bytes = type(b'')
+
+# The type that python uses internally for names (This differs between 2 and 3)
+istr = type('')
+
+# ctypes.c_void_p is broken, use pointer instead
+class pointer(ctypes.c_void_p):
+	pass
+
+# Exports
+__all__ = ('Types', 'Library', 'Loader', 'load')
 
 class Types(object):
 
@@ -22,134 +37,106 @@ class Types(object):
 		On its own this type system will construct types using the "ctypes" type system in python. But you can
 		override this behaviour, by replacing the "_pointer", "_array", and "_function" methods, and replacing the
 		built in types.
-		
-		The Universal Type System (TM):
-		
-		TODO:
 	'''
 	
 	CALLTYPES = {
 		'@cdecl' : 'cdecl',
 		'@stdcall' : 'stdcall',
 	}
+	
+	TYPESETS = {
+		# Standard C types
+		'sdtc': {
+			'void'   : None,
+			'char'   : ctypes.c_char,
+			'wchar'  : ctypes.c_wchar,
+			'byte'   : ctypes.c_byte,
+			'ubyte'  : ctypes.c_ubyte,
+			'short'  : ctypes.c_short,
+			'ushort' : ctypes.c_ushort,
+			'int'    : ctypes.c_int,
+			'uint'   : ctypes.c_uint,
+			'long'   : ctypes.c_long,
+			'ulong'  : ctypes.c_ulong,
+			'longlong'  : ctypes.c_longlong,
+			'ulonglong' : ctypes.c_ulonglong,
+			'float'  : ctypes.c_float,
+			'double' : ctypes.c_double
+		},
+		
+		# Types from stddef.h
+		'stddef': {
+			'size_t'    : {4:ctypes.c_uint32, 8:ctypes.c_uint64}[ctypes.sizeof(ctypes.c_size_t)],
+			'ptrdiff_t' : {4:ctypes.c_int32, 8:ctypes.c_int64}[ctypes.sizeof(pointer)]
+		},
+		
+		# Types from stdint.h
+		'stdint': {
+			'int8_t'    : ctypes.c_int8,
+			'int16_t'   : ctypes.c_int16,
+			'int32_t'   : ctypes.c_int32,
+			'int64_t'   : ctypes.c_int64,
+			'uint8_t'   : ctypes.c_uint8,
+			'uint16_t'  : ctypes.c_uint16,
+			'uint32_t'  : ctypes.c_uint32,
+			'uint64_t'  : ctypes.c_uint64,
+			'intptr_t'  : {4:ctypes.c_int32, 8:ctypes.c_int64}[ctypes.sizeof(pointer)],
+			'uintptr_t' : {4:ctypes.c_uint32, 8:ctypes.c_uint64}[ctypes.sizeof(pointer)]
+		},
+		
+		# Simplified types
+		'simple': {
+			'N'   :	None,
+			'P'   : ctypes.c_void_p,
+			'C'  : ctypes.c_char,
+			'CW' : ctypes.c_wchar,
+			'S'  : ctypes.c_char_p,
+			'SW' : ctypes.c_wchar_p,
+			'IA'  : {4:ctypes.c_int32, 8:ctypes.c_int64}[ctypes.sizeof(pointer)],
+			'IZ'  : {4:ctypes.c_int32, 8:ctypes.c_int64}[ctypes.sizeof(ctypes.c_size_t)],
+			'I8'  : ctypes.c_int8,
+			'I16' : ctypes.c_int16,
+			'I32' : ctypes.c_int32,
+			'I64' : ctypes.c_int64,
+			'UA'  : {4:ctypes.c_uint32, 8:ctypes.c_uint64}[ctypes.sizeof(pointer)],
+			'UZ'  : {4:ctypes.c_uint32, 8:ctypes.c_uint64}[ctypes.sizeof(ctypes.c_size_t)],
+			'U8'  : ctypes.c_uint8,
+			'U16' : ctypes.c_uint16,
+			'U32' : ctypes.c_uint32,
+			'U64' : ctypes.c_uint64,
+			'F32' : ctypes.c_float,
+			'F64' : ctypes.c_double
+		}, 
+	}
 
-	def __init__(self, stdc=False, stddef=False, stdint=False, dlltype=False):
+	def __init__(self, typesets='simple'):
 		# Init
 		self._list = {}
 		self._cache = {}
 		
-		# Load standard types
-		stdc and self.load_stdc()
-		stddef and self.load_stddef()
-		stdint and self.load_stdint()
-		dlltype and self.load_dlltype()
+		# Load type systems
+		if not isinstance(typesets, tuple):
+			typesets = tuple(name.strip() for name in typesets.split(','))
+		for name in typesets:
+			self._list.update(self.TYPESETS[name])
 	
-	def load_stdc(self):
-		'''Load standard types from C'''
-		self._list.update({
-			'void'   : ('void', 'void', None),
-			'char'   : ('char', 'char', ctypes.c_char),
-			'wchar'  : ('wchar', 'wchar_t', ctypes.c_wchar),
-			'byte'   : ('byte', 'signed byte', ctypes.c_byte),
-			'ubyte'  : ('ubyte', 'unsigned byte', ctypes.c_ubyte),
-			'short'  : ('short', 'signed short', ctypes.c_short),
-			'ushort' : ('ushort', 'unsigned short', ctypes.c_ushort),
-			'int'    : ('int', 'signed int', ctypes.c_int),
-			'uint'   : ('uint', 'unsigned int', ctypes.c_uint),
-			'long'   : ('long', 'signed long', ctypes.c_long),
-			'ulong'  : ('ulong', 'unsigned long', ctypes.c_ulong),
-			'longlong'  : ('longlong', 'signed long long', ctypes.c_longlong),
-			'ulonglong' : ('ulonglong', 'unsigned long long', ctypes.c_ulonglong),
-			'float'  : ('float', 'float', ctypes.c_float),
-			'double' : ('double', 'double', ctypes.c_double),
-		})
+	def __getitem__(self, name):
+		return self._list[name]
+		
+	def __setitem__(self, name, value):
+		self._list[name] = value
+		
+	def find(self, name, namespace=None):
+		'''Find a type by name, using an optional namespace object'''
+		if namespace:
+			try:
+				return namespace[name]
+			except KeyError:
+				pass
+		return self._list[name]
 	
-	def load_stddef(self):
-		'''Load standard types from <stddef.h>'''
-		bits = ctypes.sizeof(ctypes.c_void_p)	# Pointer size
-		self._list.update({
-			'size_t'    : ('size_t', 'size_t', ctypes.c_size_t),
-			'ptrdiff_t' : ('ptrdiff_t', 'ptrdiff_t', ctypes.c_int32 if bits == 4 else ctypes.c_int64),
-		})
-
-	def load_stdint(self):
-		'''Load standard types from <stdint.h>'''
-		bits = ctypes.sizeof(ctypes.c_void_p)	# Pointer size
-		self._list.update({
-			'int8_t'    : ('int8_t', 'int8_t', ctypes.c_int8),
-			'int16_t'   : ('int16_t', 'int16_t', ctypes.c_int16),
-			'int32_t'   : ('int32_t', 'int32_t', ctypes.c_int32),
-			'int64_t'   : ('int64_t', 'int64_t', ctypes.c_int64),
-			'uint8_t'   : ('uint8_t', 'uint8_t', ctypes.c_uint8),
-			'uint16_t'  : ('uint16_t', 'uint16_t', ctypes.c_uint16),
-			'uint32_t'  : ('uint32_t', 'uint32_t', ctypes.c_uint32),
-			'uint64_t'  : ('uint64_t', 'uint64_t', ctypes.c_uint64),
-			'intptr_t'  : ('intptr_t', 'intptr_t', ctypes.c_int32 if bits == 4 else ctypes.c_int64),
-			'uintptr_t' : ('uintptr_t', 'uintptr_t', ctypes.c_uint32 if bits == 4 else ctypes.c_uint64),
-		})
-
-	def load_dlltype(self):
-		'''Load types from the Universal Type System, used by te DLL classes'''
-		bits = ctypes.sizeof(ctypes.c_void_p)	# Pointer size
-		self._list.update({
-			'N'   :	('N', 'nothing', None),
-			'P'   : ('P', 'pointer', ctypes.c_void_p),
-			'C'   : ('C', 'character', ctypes.c_char),
-			'W'   : ('W', 'wide character', ctypes.c_wchar),
-			'SI'  : ('SI', 'signed integer (platform)', ctypes.c_int32 if bits == 4 else ctypes.c_int64),
-			'S8'  : ('S8', 'signed integer (8)', ctypes.c_int8),
-			'S16' : ('S16', 'signed integer (16)', ctypes.c_int16),
-			'S32' : ('S32', 'signed integer (32)', ctypes.c_int32),
-			'S64' : ('S64', 'signed integer (64)', ctypes.c_int64),
-			'UI'  : ('UI', 'unsigned integer (platform)', ctypes.c_uint32 if bits == 4 else ctypes.c_uint64),
-			'U8'  : ('U8', 'unsigned integer (8)', ctypes.c_uint8),
-			'U16' : ('U16', 'unsigned integer (16)', ctypes.c_uint16),
-			'U32' : ('U32', 'unsigned integer (32)', ctypes.c_uint32),
-			'U64' : ('U64', 'unsigned integer (64)', ctypes.c_uint64),
-			'F32' : ('F32', 'IEEE float (32)', ctypes.c_float),
-			'F64' : ('F64', 'IEEE float (64)', ctypes.c_double),
-		})
-		
-	def has(self, type):
-		info = self.get_typeinfo(type.strip())
-		return info is not None
-		
-	def get(self, type, calltype='cdecl'):
-		# Remove some whitespace
-		type = type.strip()
-		
-		# Lookup in type info or type cache
-		if type.isalnum():
-			info = self.get_typeinfo(type.strip())
-			if info is not None:
-				return info[2]
-		elif self._cache is not None:
-			info = self._cache.get(type)
-			if info:
-				return info[1]
-			
-		# Build type
-		info = (type, self.build(self.parsetype(type)))
-		self._cache[type] = info
-		return info[1]
-		
-	def set(self, name, fullname, object):
-		self.set_typeinfo(name, (name, fullname, object))
-		
-	def set_alias(self, name, typename):
-		self.set_typeinfo(name, (self.parsetype(typename), 'Alias: %s' % typename, self.get(typename)))
-
-	def get_typeinfo(self, name):
-		return self._list.get(name)
-	
-	def set_typeinfo(self, name, typeinfo):
-		self._list[name] = typeinfo
-		
-	# Operators
-	__getitem__ = get
-	__setitem__ = set
-	
-	def build(self, type):
+	def build(self, type, namespace=None):
+		'''Build a complex type from other types, using an optonal namespace object.'''
 		if type == '()':
 			return None
 		elif type == '...':
@@ -157,34 +144,32 @@ class Types(object):
 		else:
 			op, nodes = type[0], type[1:]
 			if op == '*':
-				return self._pointer(self.build(nodes[0]))
+				return self.build_pointer(self.build(nodes[0], namespace=namespace))
 			elif op == '[]':
-				return self._array(self.build(nodes[0]), nodes[1])
+				return self.build_array(self.build(nodes[0], namespace=namespace), nodes[1])
 			elif op == '->':
-				return self._function(tuple(self.build(x) for x in nodes[0]), self.build(nodes[1]), nodes[2])
+				return self.build_function(tuple(self.build(x, namespace=namespace) for x in nodes[0]), self.build(nodes[1], namespace=namespace), nodes[2])
 			elif op == 'id':
-				info = self.get_typeinfo(nodes[0])
-				if info is not None:
-					return info[2]
-				else:
-					print(self._list)
-					raise ValueError('type: Undefined type: %s' % type)
+				try:
+					return self.find(nodes[0], namespace=namespace)
+				except KeyError:
+					raise Utils.dontchain(ValueError('Undefined type: %s' % nodes[0]))
 			else:
-				raise ValueError('type: Invalid operator: %s' % op)
+				raise ValueError('Invalid operator: %s' % op)
 	
-	def _pointer(self, type):
+	def build_pointer(self, type):
 		'''Create type value for pointer'''
 		return ctypes.POINTER(type)
 	
-	def _array(self, type, length):
+	def build_array(self, type, length):
 		'''Create type value for array'''
 		return type * (length or 0)
 	
-	def _function(self, params, result, calltype):
+	def build_function(self, params, result, calltype):
 		'''Create type value for functions'''
 		if '...' in params:
 			# Vararg function
-			result = self._function([], result, calltype)
+			result = self.build_function([], result, calltype)
 			result.argtypes = None	# HACK: wiping argtypes creates an typeless function
 			return result
 		else:
@@ -208,7 +193,7 @@ class Types(object):
 	@classmethod
 	def tokenize(cls, text):
 		# List of symbols
-		symbols = {'->', ',', '*', ':', '...', '[', ']', '(', ')'}
+		symbols = {'->', ',', '*', '...', '[', ']', '(', ')'}
 		
 		# Tokenize input the fast way
 		for s in symbols:
@@ -217,13 +202,6 @@ class Types(object):
 		
 	@classmethod
 	def parsetype(cls, text):
-	
-		# Functions for errors reporting
-		def error_unexpected(i):
-			raise ValueError('text: Unexpected token: "%s" following: "%s"' % (expr[i], ' '.join(expr[:i])))
-		def error_unfinished():
-			raise ValueError('text: Unfinished expression: "%s"' % ' '.join(expr[:i]))
-		
 		#	Type ::=
 		#		Expression
 		#	|
@@ -240,21 +218,6 @@ class Types(object):
 		#	
 		#	CallingConvention ::= '@' + IDENTIFIER
 		#	ResultType ::= '(' ')' | Type
-		
-		level = [0]
-		def trace(f):
-			def inner(*args, **kwargs):
-				indent = '| ' * level[0]
-				p = ", ".join([repr(x) for x in args] + ["%s=%r" % x for x in kwargs.items()])
-				print('{indent}ENTER: {func} ({params})'.format(func=f.__name__, params=p, indent=indent))
-				level[0] += 1
-				
-				r = f(*args, **kwargs)
-				
-				level[0] -= 1
-				print('{indent}LEAVE: {func} -> {result}'.format(func=f.__name__, result=r, indent=indent))
-				return r
-			return inner
 		
 		def parse_type(pos):
 			return parse_type_2(pos) or parse_type_1(pos) or parse_expr(pos)
@@ -401,385 +364,488 @@ class Types(object):
 		expr_err = None
 		
 		# Parse the type
-		try:
-			type, end = parse_type(0)
+		result = parse_type(0)
+		if result:
+			result, end = result
 			if end != expr_len:
-				raise ValueError('syntax error: Expression is not a valid type!')
-			return type
-		except TypeError:
-			raise ValueError('syntax error: Expression is not a valid type!') 
-				
-class DLL(object):
+				raise ValueError('Syntax error: Unexpected input: %s' % expr[end])
+			return result
+		else:
+			raise ValueError('Syntax error: Invalid expression!')
 
-	# Path to load
-	path = ['.'] + list(sys.path)
-	# Default extensions
-	exts = ['dlib']
-	if os.name == 'nt':
-		exts += ['dll']
-	else:
-		exts += ['so']
-	# Public dll cache
-	cache = {}
+class Library(object):
 	
-	def __init__(self, library, libconf, libdesc):
-		self._types = Types(dlltype=True)
-		self._namespace = {}
-		self._description = libdesc
+	def __init__(self, loader, binary):
+		self._loader = loader
+		self._binary = binary
+		self._delayed = {}
 		
-		# Load library
-		self._binary = ctypes.cdll.LoadLibrary(os.path.abspath(library))
-		self._process_config(libconf)
-		
-	@classmethod
-	def load(cls, jsonfile, dllfile=None, private=False):
-	
-		# Load from dll cache
-		if not private:
-			result = cls.cache.get(jsonfile)
-			if result is not None:
+	def __getattr__(self, name):
+		# Do not resolve reserved names
+		if not name.startswith('_') or name.startswith('_u_'):
+			# Unescape attribute name
+			attrname = name
+			if attrname.startswith('_u_'):
+				name = attrname[2:]
+				
+			try:
+				# Resolve delayed export
+				result = self._loader.load_delayed(self, self._delayed[name])
+				
+				# Move to attributes
+				del self._delayed[name]
+				self.__dict__[attrname] = result
 				return result
-	
-		# Load json with comments
-		with io.open(jsonfile, 'r', encoding='utf-8') as file:
-			config = json.loads(re.sub(r'^[ \t]*#.*$', '', file.read(), flags=re.MULTILINE))
-			
-		def error_invalid(x):
-			raise ValueError('jsonfile: Invalid value for %s' % x)
-		def error_notfound(x):
-			raise IOError('dllfile: File not found: %s' % x)
+			except KeyError:
+				pass
+				
+		# Raise AttributeError
+		return object.__getattribute__(self, attrname)
 		
-		# Validate file format
-		(config['type'] == 'library') or error_invalid('type')
-		(int(config['version']) == 1) or error_invalid('version')
+	def __getitem__(self, name):
+		# Escape names starting with underscore
+		attrname = '_u' * name.startswith('_') + name
 		
-		# Process filename
-		jsonpath = os.path.abspath(os.path.dirname(jsonfile))
-		jsonname = os.path.splitext(os.path.basename(jsonfile))[0]
+		# Lookup in dictionary
+		try:
+			return self.__dict__[attrname]
+		except KeyError:
+			pass
 		
-		# Default values
-		if dllfile is None:
-			dllfile = config.get('binary', '*')
-		dllfile = dllfile.replace('*', jsonname)
-			
-		# Locate dllfile
-		dllfile = cls.locate(dllfile, [jsonpath] + cls.path, cls.exts) or error_notfound(dllfile)
+		# Resolve delayed export
+		result = self._loader.load_delayed(self, self._delayed[name])
 		
-		# Create object
-		result = cls(library=dllfile, libconf=config['library'], libdesc=config.get('description'))
-		
-		# Save to dll cache
-		if not private:
-			cls.cache[jsonfile] = result
-			
-		# Return result
+		# Move to attributes
+		del self._delayed[name]
+		self.__dict__[attrname] = result
 		return result
 		
-	@classmethod
-	def locate(cls, filename, path=None, exts=None):
+	def __setitem__(self, name, value):
+		# Escape names starting with underscore
+		if name.startswith('_'):
+			name = '_u' + name
 	
-		# Default path and exts
-		if path is None:
-			path = cls.path
-		if exts is None:
-			exts = cls.exts
-	
-		# Separate path
-		dlldir = os.path.dirname(filename)
-		dllext = os.path.splitext(filename)[1]
+		# Set value in object
+		self.__dict__[name] = value
+
+class Loader(object):
+	# File format version of the library descriptor JSON
+	FORMAT_VERSION = 2
+
+	# Path for loading dlls
+	path = ['.'] + list(sys.path)
+	# Extensions of the library binary
+	extensions = ['dlib'] + {'nt': ['dll'], 'posix': ['so']}.get(os.name, [])
+	# Binary cache to avoid loading a library multiple times
+	binary_cache = weakref.WeakValueDictionary()
+
+	def __init__(self, path=None, extensions=None, types=None):
+		# Public dlls are cached by the loader. Loaders do not share caches
+		self.cache = {}
 		
-		# Find dll file
-		if dlldir:
-			# Static lookup
-			file = os.path.abspath(filename)
-			if os.path.isfile(file):
-				return file
+		# Set path and extensions
+		if path is not None:
+			self.path = path
+		if extensions is not None:
+			self.extensions = extensions
+		
+		# Create type system with default type sets
+		self.types = types or Types(typesets='simple')
+	
+	def load(self, filename, binary=None, delayed=False, private=False):
+		# Normalize filename
+		filename = os.path.abspath(filename)
+	
+		# Load from cache
+		if not private:
+			library = self.cache.get(filename)
+			if library is not None:
+				return library
 				
-			# With extensions
-			if not dllext:
-				for extension in exts:
-					if os.path.isfile(file + '.' + extension):
-						return file + '.' + extension
+		# Load library descriptor json with comments removed
+		with io.open(filename, 'r', encoding='utf-8') as file:
+			config = json.loads(re.sub(r'^[ \t]*#.*$', '', file.read(), flags=re.MULTILINE))
 			
-		else:
-			for root in path:
-				# Path lookup
-				file = os.path.join(root, filename)
+		# Validate file format
+		if config['type'] != 'library':
+			raise ValueError('"{filename}": Value of "type" need to be "{expected}"!'.format(filename=filename, expected="library"))
+		if int(config['version']) != self.FORMAT_VERSION:
+			raise ValueError('"{filename}": Value of "version" need to be "{expected}"!'.format(filename=filename, expected=self.FORMAT_VERSION))
+		
+		# Locate binary
+		defpath = os.path.dirname(filename)
+		defname = os.path.splitext(os.path.basename(filename))[0]
+		if binary is None:
+			binary = config.get('binary', '*.*')
+		binary = binary.replace('*', defname, 1)
+		binary = self.locate(binary, path = [defpath] + self.path, extensions=self.extensions)
+		if binary is None:
+			raise ValueError('"{filename}": Not found!'.format(filename=filename))
+		
+		try:
+			binary = self.binary_cache[binary]
+		except KeyError:
+			binary = self.binary_cache[binary] = ctypes.cdll.LoadLibrary(binary)
+		
+		# Create library
+		config = config['library']
+		library = Library(loader=self, binary=binary)
+		library.version = config['version']
+		library._version = library.version
+		library.description = config['description']
+		library._description = library.description
+		self.load_defines(library, config['define'])
+		self.load_exports(library, config['export'], delayed=delayed)
+		
+		# Save and return library
+		if not private:
+			self.cache[filename] = library
+		return library
+	
+	def locate(self, filename, path=None, extensions=None):
+		'''
+		Locate the binary based on its name.
+		
+		When locating a binary for library, the directory of the library descriptor file is searched before any other
+		locations in the path. To simulate this, you must manually add this directory to the path when invoking this
+		function, otherwise binaries next to the descriptor file may not be found.
+		'''
+	
+		# Set up path and extensions
+		if path is None:
+			path = self.path
+		if extensions is None:
+			extensions = self.extensions
+		
+		# Check directory and extension. Both are optional.
+		hasdir = bool(os.path.dirname(filename))
+		hasext = bool(os.path.splitext(filename)[1])
+		
+		# Special suffix for files with '.' in the name to indicate the lack of an extension
+		if filename.endswith('.*'):
+			hasext = False
+			filename = filename[:-2]
+		
+		if hasdir:
+			# Look up in directory
+			if hasext:
+				file = os.path.abspath(filename)
 				if os.path.isfile(file):
 					return file
-				
-				# With extensions
-				if not dllext:
-					for extension in exts:
-						if os.path.isfile(file + '.' + extension):
-							return file + '.' + extension
-				
-		# Not found
+			else:
+				for e in extensions:
+					file = os.path.abspath(filename) + '.' + e
+					if os.path.isfile(file):
+						return file
+		else:
+			# Look up in path
+			for root in path:
+				root = os.path.abspath(root)
+				if hasext:
+					file = os.path.join(root, filename)
+					if os.path.isfile(file):
+						return file
+				else:
+					for e in extensions:
+						file = os.path.join(root, filename) + '.' + e
+						if os.path.isfile(file):
+							return file
+		
+		# Look up failed
 		return None
 		
-	def __getattr__(self, attr):
-		return self._namespace[attr]
+	def load_defines(self, library, defines):
+		# Define constants
+		for id, kind, value in defines.get('const', []):
+			self.check_unique(library, id)
+			self.define_const(library, id, kind, value)
+		
+		# Define types - First pass
+		for id, kind, value in defines.get('type', []):
+			self.check_unique(library, id)
+			if kind in ('struct', 'union'):
+				self.declare_type(library, id, kind)
+			else:
+				self.define_type(library, id, kind, value)
+		
+		# Define types - Second pass
+		for id, kind, value in defines.get('type', []):
+			if kind in ('struct', 'union') and value is not None:
+				self.define_type(library, id, kind, value)
 	
-	def __getitem__(self, name):
-		return self._namespace[name]
+	def load_exports(self, library, exports, delayed=False):
+		# Export functions
+		for id, name, type in exports.get('function', []):
+			self.check_unique(library, id, delayed=delayed)
+			if name is None:
+				name = id
+			if delayed:
+				library._delayed[id] = ('F', id, name, type)
+			else:
+				self.export_function(library, id, name, type)
 		
-	def __iter__(self):
-		return self._namespace.__iter__()
-		
-	def keys(self):
-		return self._namespace.keys()
-		
-	def values(self):
-		return self._namespace.values()
-		
-	def items(self):
-		return self._namespace.items()
-		
-	def _process_config(self, config):
+		# Export variables
+		for id, name, type in exports.get('variable', []):
+			self.check_unique(library, id, delayed=delayed)
+			if name is None:
+				name = id
+			if delayed:
+				library._delayed[id] = ('V', id, name, type)
+			else:
+				self.export_variable(library, id, name, type)
 	
-		# Library version
-		self.version = config.get('version')
-		
-		# Process defines
-		defines = config.get('define')
-		if defines:
-		
-			# Define constants
-			group = defines.get("const")
-			if group:
-				for item in group:
-					k, t, v = item
-					if t in ('I', 'int'):
-						self._define_const_int(k, v)
-					elif t in ('F', 'float'):
-						self._define_const_float(k, v)
-					elif t in ('S', 'string'):
-						self._define_const_string(k, v)
-					elif t in ('W', 'wstring'):
-						self._define_const_wstring(k, v)
-						
-			# Define types
-			group = defines.get("type")
-			if group:
-				for item in group:
-					k, t, v = item
-					if t in ('=', 'alias'):
-						self._define_type_alias(k, v)
-					elif t == 'enum':
-						self._define_type_enum(k, v)
-					elif t == 'union':
-						self._define_type_union(k, v)
-					elif t == 'struct':
-						self._define_type_struct(k, v)
-					
-		# Process exports
-		exports = config.get('export')
-		if exports:
-		
-			# Export variables
-			group = exports.get('variable')
-			if group:
-				for item in group:
-					k, n, v = item
-					self._export_variable(k, n, v)
-					
-			# Export functions
-			group = exports.get('function')
-			if group:
-				for item in group:
-					k, n, v = item
-					self._export_function(k, n, v)
-		
-	def _define_const_int(self, name, value):
-	
-		# Check duplicates
-		if name in self._namespace:
-			raise ValueError('name: "%s" is already defined' % name)
-
-		# Decode value
-		if isstring(value) and value.startswith('0x'):
-			value = int(value, 16)
+	def load_delayed(self, library, delayed):
+		kind, id, name, type = delayed
+		if kind == 'F':
+			return self.export_function(library, id, name, type)
+		elif kind == 'V':
+			return self.export_variable(library, id, name, type)
 		else:
-			value = int(value)
-		# Define constant
-		self._namespace[name] = value
-		
-	def _define_const_float(self, name, value):
+			raise ValueError('"{id}": Value of "kind" must be in {expected}!'.format(id=id, expected=('F', 'V')))
 	
-		# Check duplicates
-		if name in self._namespace:
-			raise ValueError('name: "%s" is already defined' % name)
+	def check_unique(self, library, id, delayed=False):
+		if not self.isident(id):
+			raise ValueError('"{id}": Not a valid identifier!'.format(id=id))
+		try:
+			if delayed:
+				_ = library._delayed[id]
+			else:
+				_ = library[id]
+			raise ValueError('"{id}": Duplicate identifier!'.format(id=id))
+		except KeyError:
+			pass
+	
+	def define_const(self, library, id, kind, value):
+		if kind in ('I', 'int'):
+			library[id] = Utils.integer(value)
+		elif kind in ('F', 'float'):
+			library[id] = float(value)
+		elif kind in ('S', 'string'):
+			library[id] = Utils.bytes(value)
+		elif kind in ('W', 'wstring'):
+			library[id] = Utils.string(value)
+		else:
+			raise ValueError('"{id}": Value of "kind" must be in {expected}'.format(id=id, expected=("I", "int", "F", "float", "S", "string", "W", "wstring")))
+	
+	def define_type(self, library, id, kind, value):
+		if kind in ('=', 'alias'):
+			try:
+				library[id] = self.types.build(self.types.parsetype(value), namespace=library)
+			except ValueError as ex:
+				raise ValueError('{id}: {error}'.format(id=id, error=str(ex)))
+		
+		elif kind in ('E', 'enum'):
+			self.define_enum(library, id, value)
+		elif kind in ('S', 'struct'):
+			self.define_struct(library, id, value)
+		elif kind in ('U', 'union'):
+			self.define_union(library, id, value)
+		else:
+			raise ValueError('"{id}": Value of "kind" must be in {expected}'.format(id=id, expected=("=", "alias", "E", "enum", "S", "struct", "U", "union")))
+	
+	def define_enum(self, library, id, entries):
+		# Check name
+		self.check_unique(library, id)
+		# Process entries
+		values = []
+		hi, lo, next = 0, 0, 0
+		for entry in Utils.typecheck(entries, list):
+			# Process entry
+			name, value = Utils.ljust([x.strip() for x in entry.split('=', 1)], 2)
+			# Auto increment unspecified enum values
+			if value is not None:
+				next = Utils.integer(value)
+			value = next
+			# Collect results
+			values.append((name, value))
+			hi, lo, next = max(hi, value), min(lo, value), next + 1
 
-		# Decode value
-		value = float(value)
-		# Define constant
-		self._namespace[name] = value
-		
-	def _define_const_string(self, name, value):
-	
-		# Check duplicates
-		if name in self._namespace:
-			raise ValueError('name: "%s" is already defined' % name)
-
-		# Define constant
-		self._namespace[name] = value.encode('utf-8')
-		
-	def _define_const_wstring(self, name, value):
-	
-		# Check duplicates
-		if name in self._namespace:
-			raise ValueError('name: "%s" is already defined' % name)
-
-		# Define constant
-		self._namespace[name] = value
-		
-	def _define_type_alias(self, name, value):
-	
-		# Check duplicates
-		if name in self._namespace:
-			raise ValueError('name: "%s" is already defined' % name)
-		
-		# Define type alias
-		self._types.set_alias(name, value)
-		self._namespace[name] = self._types.get(name)
-		
-	def _define_type_enum(self, name, data):
-	
-		# Check duplicates
-		if name in self._namespace:
-			raise ValueError('name: "%s" is already defined' % name)
-	
-		# Define enum values
-		if data:
-			lo, hi, next = 0, 0, 0
-			for v in data:
-				# Get name and optional value
-				v = [x.strip() for x in v.split('=', 1)]
-				n = v[0]
-				next = next if len(v) == 1 else int(v[1])
-				
-				# Check duplicates
-				if name in self._namespace:
-					raise ValueError('data: "%s" is already defined' % n)
-				
-				# Set enum value
-				self._namespace[n] = next
-				
-				# Update
-				lo = min(lo, next)
-				hi = max(hi, next)
-				next += 1
-				
-		# Define enum type
+		# Enum types are fuzzy. This is what GCC does, so we roll with it
 		if lo < 0:
-			hi = max(hi, -lo)
-			type = ctypes.c_int64
-			limits = [(1 << 7, ctypes.c_int8), (1 << 15, ctypes.c_int16), (1 << 31, ctypes.c_int32)]
+			# Signed enum
+			hi = max(hi, (- min - 1))
+			if hi < 0x80000000:
+				enumtype = ctypes.c_int32
+			else:
+				enumtype = ctypes.c_int64
 		else:
-			type = ctypes.c_uint64
-			limits = [(1 << 8, ctypes.c_uint8), (1 << 16, ctypes.c_uint16), (1 << 32, ctypes.c_uint32)]
-		
-		for l, t in limits:
-			if hi < l:
-				type = t
-		
-		self._types.set(name, 'Enum %s' % name, type)
-		self._namespace[name] = type
-		
-		
-	def _define_type_union(self, name, data):
-	
-		# Errors
-		def error_duplicate():
-			raise ValueError('name: "%s" is already defined' % name)
-		
-		# Declare union
-		if name in self._namespace:
-			union = self._namespace.get(name)
-			# Check union type
-			issubclass(union, ctypes.Union) or error_duplicate()
-			# Check incomplete union
-			(not hasattr(union, '_fields_')) or (union._fields_ is None) or error_duplicate()
-		else:
-			union = type(str(name), (ctypes.Union, ), {})
-			self._types.set(name, 'Union %s'  % name, union)
-			self._namespace[name] = union
-		
-		# Define union
-		if data is not None:
-			fields = []
-			for v in data:
-				# Get name and type
-				field, type = [x.strip() for x in v.split(':', 1)]
-				# Resolve field type
-				fields.append((field, self._types.get(type)))
-				
-			# Define fields
-			union._fields_ = fields
-		
-	def _define_type_struct(self, name, data):
-	
-		# Errors
-		def error_duplicate():
-			raise ValueError('name: "%s" is already defined' % name)
-		
-		# Declare struct
-		if name in self._namespace:
-			struct = self._namespace.get(name)
-			# Check struct type
-			issubclass(struct, ctypes.Structure) or error_duplicate()
-			# Check incomplete struct
-			(not hasattr(struct, '_fields_')) or (struct._fields_ is None) or error_duplicate()
-		else:
-			struct = type(str(name), (ctypes.Structure, ), {})
-			self._types.set(name, 'Struct %s'  % name, struct)
-			self._namespace[name] = struct
-		
-		# Define struct
-		if data is not None:
-			fields = []
-			for v in data:
-				# Get name and type
-				fn, ft = [x.strip() for x in v.split(':', 1)]
-				# Resolve field type
-				fields.append((fn, self._types.get(ft)))
+			# Unsigned enum
+			if hi < 0x100000000:
+				enumtype = ctypes.c_uint32
+			else:
+				enumtype = ctypes.c_uint64
 			
-			# Define fields
-			struct._fields_ = fields
+		# Define enum type
+		library[id] = enumtype
+		# Define enum values
+		for name, value in values:
+			self.check_unique(library, name)
+			library[name] = value
+
+	def define_struct(self, library, id, entries):
+		# Check declaration
+		try:
+			cls = library[id]
+			if not issubclass(cls, ctypes.Structure) or hasattr(cls, '_fields_'):
+				raise ValueError('"{id}": Type is already defined'.format(id=id))
+		except KeyError:
+			cls = library[id] = type(istr(id), (ctypes.Structure,), {})
+
+		# Define fields
+		cls._fields_ = fields = []
+		for entry in Utils.typecheck(entries, list):
+			name, fieldtype = [x.strip() for x in entry.split(':', 1)]
+			try:
+				fields.append((name, self.types.build(self.types.parsetype(fieldtype), namespace=library)))
+			except ValueError as ex:
+				raise ValueError('{id}.{name}: {error}'.format(id=id, name=name, error=str(ex)))
+
+	def define_union(self, library, id, entries):
+		# Check declaration
+		try:
+			cls = library[id]
+			if not issubclass(cls, ctypes.Union) or hasattr(cls, '_fields_'):
+				raise ValueError('"{id}": Type is already defined'.format(id=id))
+		except KeyError:
+			cls = library[id] = type(istr(id), (ctypes.Union,), {})
 		
-	def _export_variable(self, name, dllname, type):
+		# Define fields
+		cls._fields_ = fields = []
+		for entry in Utils.typecheck(entries, list):
+			name, fieldtype = [x.strip() for x in entry.split(':', 1)]
+			try:
+				fields.append((name, self.types.build(self.types.parsetype(fieldtype), namespace=library)))
+			except ValueError as ex:
+				raise ValueError('{id}.{name}: {error}'.format(id=id, name=name, error=str(ex)))
+
+	def declare_type(self, library, id, kind):
+		if kind in ('S', 'struct'):
+			library[id] = type(istr(id), (ctypes.Structure,), {})
+		elif kindin ('U', 'union'):
+			library[id] = type(istr(id), (ctypes.Union,), {})
+		else:
+			raise ValueError('"{id}": Value of "kind" must be in {expected}'.format(id=id, expected=("S", "struct", "U", "union")))
+
+	def export_function(self, library, id, name, type):
+		try:
+			type = self.types.build(self.types.parsetype(type), namespace=library)
+		except ValueError as ex:
+			raise ValueError('{id}: {error}'.format(id=id, error=str(ex)))
+		result = ctypes.cast(getattr(library._binary, name), type)
+		library[id] = result
+		return result
+
+	def export_variable(self, library, id, name, type):
+		try:
+			type = self.types.build(self.types.parsetype(type), namespace=library)
+		except ValueError as ex:
+			raise ValueError('{id}: {error}'.format(id=id, error=str(ex)))
+		result = type.in_dll(library._binary, name)
+		library[id] = result
+		return result
 	
-		# Check duplicates
-		if name in self._namespace:
-			raise ValueError('name: "%s" is already defined' % name)
+	@staticmethod
+	def isident(name):
+		return Types.isident(name)
+
+# Default loader used by the `load` function 
+default_loader = Loader()
+
+def load(filename, binary=None, private=False):
+	'''Load a dynamic library definition file, using the default loader.'''
+	return default_loader.load(filename, binary=None, private=False)
+
+def generate(filename, language='python', template=None):
+	raise NotImplementedError
+	
+class Utils(object):
+
+	@staticmethod
+	def dontchain(e):
+		'''Disable automatic exception chaining in python 3 (Same as "raise ... from None", but this compiles in python 2)'''
+		e.__cause__ = None
+		return e
+	
+	@staticmethod
+	def typecheck(value, types):
+		'''Check the type of an expression and return it'''
+		if not isinstance(value, types):
+			raise TypeError('Expected value to have type: %r' % types)
+		return value
+	
+	@staticmethod
+	def bytes(val):
+		'''Convert to byte string'''
+		if isinstance(val, str):
+			return val.encode('utf-8', errors='replace')
+		return Utils.typecheck(val, bytes)
+	
+	@staticmethod
+	def string(val):
+		'''Convert to char string'''
+		if isinstance(val, bytes):
+			return val.decode('utf-8', errors='replace')
+		return Utils.typecheck(val, str)
+	
+	@staticmethod
+	def integer(val):
+		'''Convert to integer'''
+		# Convert from string
+		if isinstance(val, str):
+			# Get prefix
+			if val[:1] in (u'+', u'-'):
+				prefix = val[1:3]
+			else:
+				prefix = val[0:2]
+			# Check prefix
+			if prefix == u'0b':
+				return int(val, 2)
+			elif prefix == u'0o':
+				return int(val, 8)
+			elif prefix == u'0x':
+				return int(val, 16)
 		
-		# Decode data
-		if (dllname) is None:
-			dllname = name
+		# Convert from bytes
+		elif isinstance(val, bytes):
+			# Get prefix
+			if val[:1] in (b'+', b'-'):
+				prefix = val[1:3]
+			else:
+				prefix = val[0:2]
+			# Check prefix
+			if prefix == b'0b':
+				return int(val, 2)
+			elif prefix == b'0o':
+				return int(val, 8)
+			elif prefix == b'0x':
+				return int(val, 16)
+		
+		# Fallback
+		return int(val)
+		
+	@staticmethod
+	def ljust(list, width, fillitem=None):
+		'''Padd a list to a mininum size, while keeping existing elements on the left.'''
+		return list + [fillitem] * (width - len(list))
+		
+	@staticmethod
+	def rjust(list, width, fillitem=None):
+		'''Padd a list to a mininum size, while keeping existing elements on the right.'''
+		return [fillitem] * (width - len(list)) + list
+
+	@staticmethod
+	def trace(f):
+		'''Trace a function call'''
+		level = Utils.trace.level = [0]
+		def inner(*args, **kwargs):
+			indent = '| ' * level[0]
+			p = ", ".join([repr(x) for x in args] + ["%s=%r" % x for x in kwargs.items()])
+			print('{indent}ENTER: {func} ({params})'.format(func=f.__name__, params=p, indent=indent))
+			level[0] += 1
 			
-		# Get variable
-		type = self._types.get(type)
-		self._namespace[name] = type.in_dll(self._binary, "name")
-		
-	def _export_function(self, name, dllname, type):
-	
-		# Check duplicates
-		if name in self._namespace:
-			raise ValueError('name: "%s" is already defined' % name)
-		
-		# Decode data
-		if (dllname) is None:
-			dllname = name
-		
-		# Get function
-		type = self._types.get(type)
-		self._namespace[name] = ctypes.cast(getattr(self._binary, dllname), type)
-		
-def isstring(obj):
-	'''Detects if the object is any of the two string types'''
-	return type(obj) in (type(b''), type(u''))
-
-
-# Exports
-__all__ = ('Types', 'DLL')
-	
+			r = f(*args, **kwargs)
+			
+			level[0] -= 1
+			print('{indent}LEAVE: {func} -> {result}'.format(func=f.__name__, result=r, indent=indent))
+			return r
+		return inner
