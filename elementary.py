@@ -16,15 +16,17 @@ import posixpath as _posixpath
 #	Versioning 
 # ------------------------------------------------------------ #
 
-version = (0, 1, 3)
+version = (0, 1, 4)
 versionstring = '%d.%d.%d' % version
 
+pyversion = sys.version_info[:3]
+pyversionstring = '%d.%d.%d' % pyversion
 
 # ------------------------------------------------------------ #
 #	Classes 
 # ------------------------------------------------------------ #
 
-class namespace:
+class namespace(object):
 	'''Works like a Lua table, or a javascript object. Can be used as decorator for classes'''
 
 	def __init__(self, init=None):
@@ -38,7 +40,7 @@ class namespace:
 			
 			if isinstance(init, namespaces):
 				self.__dict__.update(init.__dict__)
-			elif init is not None:
+			else:
 				self.__dict__.update(init)
 	
 	def __repr__(self):
@@ -121,10 +123,14 @@ def scope(f):
 			setattr(result, attr, getattr(f, attr))
 	
 	# Return exports
-	return f()
+	return result
 	
 scope.inherit = ['__name__', '__doc__']
 
+@decorator
+def singleton(cls):
+	'''Decorator for replacing a class with a single instance of it. Similar to `scope`, but this one is used for classes.'''
+	return cls()
 
 # ------------------------------------------------------------ #
 #	Resource functions
@@ -302,22 +308,38 @@ class resource:
 	# Register resource loaders
 	loader_hooks += [ZipLoader]
 
+# ------------------------------------------------------------ #
+#	Overload support
+# ------------------------------------------------------------ #
+
+@decorator
+class overload(object):
+	pass # TODO
 
 # ------------------------------------------------------------ #
-#	Fixing stdio, stderr
+#	Fixing standard output and error
 # ------------------------------------------------------------ #
 
 # Make sure standard streams are safe to write
 if sys.version_info > (3, 0):
-	if sys.stdout.encoding not in ('utf8', 'utf-8') and sys.stdout.errors == 'surrogateescape':
+	if sys.stdout.errors in ('strict', 'surrogateescape'):
 		_params = dict(encoding=sys.stdout.encoding, errors='replace', newline=sys.stdout.newlines, line_buffering=sys.stdout.line_buffering)
 		sys.stdout = io.TextIOWrapper(sys.stdout.detach(), **_params)
 		del _params
-	if sys.stdout.encoding not in ('utf8', 'utf-8') and sys.stderr.errors == 'surrogateescape':
+	if sys.stderr.errors in ('strict', 'surrogateescape'):
 		_params = dict(encoding=sys.stderr.encoding, errors='replace', newline=sys.stderr.newlines, line_buffering=sys.stderr.line_buffering)
 		sys.stderr = io.TextIOWrapper(sys.stderr.detach(), **_params)
 		del _params
 
+# ------------------------------------------------------------ #
+#	Disabling anti-features
+# ------------------------------------------------------------ #
+
+# Disable printing automatically chained exceptions
+def excepthook(type, value, traceback, *, prev=sys.excepthook):
+	value.__context__ = None
+	return prev(type, value, traceback)
+sys.excepthook = excepthook
 
 # ------------------------------------------------------------ #
 #	Extending os.path
