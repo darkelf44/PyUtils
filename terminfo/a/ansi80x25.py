@@ -1,0 +1,1 @@
+import terminfo.c.cons25

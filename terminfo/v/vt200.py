@@ -1,0 +1,1 @@
+import terminfo.v.vt220

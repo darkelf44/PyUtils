@@ -1,0 +1,5 @@
+# Imports
+from terminfo import TerminalModule
+
+# Terminal: dec vt52
+TerminalModule(['vt52'], use=[], backspaces_with_bs=True, init_tabs=8, lines=24, acs_chars=b'+h.k0affggolpnqprrss', cursor_home=b'\x1bH', key_backspace=b'\x08', newline=b'\r\n', scroll_reverse=b'\x1bI', exit_alt_charset_mode=b'\x1bG', keypad_local=b'\x1b>', enter_alt_charset_mode=b'\x1bF', keypad_xmit=b'\x1b=', user8=b'\x1b/[KL]', cursor_left=b'\x1bD', cursor_down=b'\x1bB', cursor_address=b'\x1bY%p1%{32}%+%c%p2%{32}%+%c', key_left=b'\x1bD', key_down=b'\x1bB', key_right=b'\x1bC', key_up=b'\x1bA', columns=80, bell=b'\x07', clear_screen=b'\x1bH\x1bJ', carriage_return=b'\r', cursor_right=b'\x1bC', cursor_up=b'\x1bA', clr_eos=b'\x1bJ', clr_eol=b'\x1bK', tab=b'\t', scroll_forward=b'\n', user9=b'\x1bZ', key_a1=b'\x1b?q', key_a3=b'\x1b?s', key_b2=b'\x1b?r', key_c1=b'\x1b?p', key_c3=b'\x1b?n', key_f0=b'\x1b?y', key_f1=b'\x1bP', key_f2=b'\x1bQ', key_f3=b'\x1bR', key_f5=b'\x1b?t', key_f6=b'\x1b?u', key_f7=b'\x1b?v', key_f8=b'\x1b?w', key_f9=b'\x1b?x')
